@@ -505,11 +505,11 @@ def following_train(epoch_num=20):
             loss.backward()
             torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=0.5)
             optimizer.step()
-
+   
         else:
             print("pred_label:",pred_label.size())
             print("tag_token",tag_tensor.size())
-            print(img.size())
+            print(img.size())      
 
             # print(pred_label[0])
 
