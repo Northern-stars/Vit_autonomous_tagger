@@ -465,6 +465,7 @@ def train(epoch_num=20):
             optimizer.zero_grad()
             # loss.requires_grad_(True)
             loss.backward()
+            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=0.5)
             optimizer.step()
         if choice_list==[]:
             epoch=epoch+1
@@ -502,6 +503,7 @@ def following_train(epoch_num=20):
             optimizer.zero_grad()
             loss.requires_grad_(True)
             loss.backward()
+            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=0.5)
             optimizer.step()
 
         else:
