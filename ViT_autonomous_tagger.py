@@ -6,6 +6,10 @@ import random
 from conv import load_image,resize_img,check_dataset_exist
 
 
+MAX_LEN=256
+PRINT_EVERY=100
+
+
 #Embedding
 tag=['<start>','<end>','<pad>']
 def token2tag(token):
@@ -21,10 +25,10 @@ def tagTokenDecoding(tags):
     for i in range(len(tags)):
         if tags[i]==0 or tags[i]==2:
             continue
-        elif tags[i]==2:
+        elif tags[i]==1:
             return string
         else:
-            string+=token2tag(tags[i])+'#,'
+            string+=token2tag(tags[i])+',#'
     return string
 
 
@@ -45,61 +49,110 @@ class PositionEmbedding(nn.Module):
     
     def forward(self,x):
         with torch.no_grad():
-            seq_len=x.size(0)
+            batch_size=x.size(0)
+            seq_len=x.size(1)
             # print("seq:",seq_len)
-        return self.encoding[:seq_len,:]
+            encoding_tensor=self.encoding[:seq_len,:]
+            encoding_tensor=encoding_tensor.unsqueeze(0).repeat(batch_size,1,1)
+            # print("encoding tensor size: ",encoding_tensor.size())
+        return encoding_tensor
 
+# PROBLEM: 1. use for loop to process batches, inefficient 2. dimension error, channel should be included in d_model,final shape should be [batch_size,(picture_size/patch_size)**2,channel_num*(patch_size**2)]
+# class PictureEmbedding(nn.Module):
+#     def __init__(self,picture_size,patch_size,device):
+#         super(PictureEmbedding,self).__init__()
+#         # self.pos=nn.Linear(picture_size[0]*picture_size[1]*3,picture_size[0]*picture_size[1]*3) #Can't do that, too large linear layer
+#         self.width=picture_size[1]
+#         self.height=picture_size[2]
+#         self.channel_num=picture_size[3]
+#         self.batch_size=picture_size[0]
+#         self.patch_size=patch_size
+#         # self.positional_embedding=PositionEmbedding(d_model,max_len=self.length*self.height*3,device=device)
+
+#     def forward(self,x):
+#         with torch.no_grad():
+#             print(x.size())
+#             patched_image=x.unfold(0,self.patch_size,self.patch_size)
+#             print(patched_image.size())
+#             patched_image=patched_image.unfold(1,self.patch_size,self.patch_size)
+#             print(patched_image.size())
+#             patched_image=patched_image.reshape(-1,self.patch_size**2,self.channel_num)
+#             print(patched_image.size())
+#             patched_image=patched_image.permute(0,2,1)
+#             patched_image=patched_image.reshape(int(self.width*self.height*self.channel_num/(self.patch_size**2)),self.patch_size**2)
+#             return patched_image
 
 class PictureEmbedding(nn.Module):
-    def __init__(self,picture_size,patch_size,device):
+    def __init__(self,length,d_model,device):
         super(PictureEmbedding,self).__init__()
-        # self.pos=nn.Linear(picture_size[0]*picture_size[1]*3,picture_size[0]*picture_size[1]*3) #Can't do that, too large linear layer
-        self.width=picture_size[1]
-        self.height=picture_size[2]
-        self.channel_num=picture_size[3]
-        self.batch_size=picture_size[0]
-        self.patch_size=patch_size
-        # self.positional_embedding=PositionEmbedding(d_model,max_len=self.length*self.height*3,device=device)
-
+        self.conv1=nn.Conv2d(3,64,kernel_size=3,stride=1,padding=1)
+        self.relu=nn.ReLU()
+        self.maxpool=nn.MaxPool2d(kernel_size=2,stride=2)
+        self.adaptivepooling=nn.AdaptiveMaxPool1d(output_size=length)
+        self.conv2=nn.Conv2d(64,128,kernel_size=3,stride=1,padding=1)
+        self.conv3=nn.Conv2d(128,256,kernel_size=3,stride=1,padding=1)
+        self.conv4=nn.Conv2d(256,d_model,kernel_size=3,stride=1,padding=1)
+        self.d_model=d_model
     def forward(self,x):
-        with torch.no_grad():
-            # print(x.size())
-            patched_image=x.unfold(0,self.patch_size,self.patch_size)
-            # print(patched_image.size())
-            patched_image=patched_image.unfold(1,self.patch_size,self.patch_size)
-            # print(patched_image.size())
-            patched_image=patched_image.reshape(-1,self.patch_size**2,self.channel_num)
-            # print(patched_image.size())
-            patched_image=patched_image.permute(0,2,1)
-            patched_image=patched_image.reshape(int(self.width*self.height*self.channel_num/(self.patch_size**2)),self.patch_size**2)
-        # patched_image.requires_grade=True
-        # print(patched_image.requires_grad)
-            return patched_image
+        #shape: [batch_size,width,height,channel]
+        #expecting output: [batchsize,length,d_model]
+        x=x.permute(0,3,1,2)
+        x=self.conv1(x)
+        x=self.relu(x)
+        x=self.maxpool(x)
+
+        x=self.conv2(x)
+        x=self.relu(x)
+        x=self.maxpool(x)
+        
+        x=self.conv3(x)
+        x=self.relu(x)
+        x=self.maxpool(x)
+
+        x=self.conv4(x)
+        x=self.relu(x)
+        x=self.maxpool(x)
+
+        x=x.reshape(x.size(0),self.d_model,-1)
+        # print(x.size())
+        x=self.adaptivepooling(x)
+        x=x.permute(0,2,1)
+        # print("embedding output x size: ",x.size())
+
+        return x
 
 
 
 
 class PictureEncoding(nn.Module):
-    def __init__(self,picture_size,patch_size,drop_prob,device):
+    def __init__(self,length,d_model,drop_prob,device):
         super(PictureEncoding,self).__init__()
-        self.tok_emb=PictureEmbedding(picture_size,patch_size,device=Device)
-        self.pos_emb=PositionEmbedding(patch_size**2,picture_size[1]*picture_size[2]*picture_size[3],device)
+        self.tok_emb=PictureEmbedding(length,d_model,device=Device)
+        self.pos_emb=PositionEmbedding(d_model,length,device)
         self.drop_out=nn.Dropout(p=drop_prob)# regular way of normalization, ramdomly set some of the output into 0
-        self.patch_size=patch_size
-    def forward(self,x):
-        with torch.no_grad():#changed
-            batch_size,width,height,channel=x.size()
+        self.d_model=d_model
+        self.length=length
+    # Old forward
+    # def forward(self,x):
+    #     with torch.no_grad():#changed
+    #         batch_size,width,height,channel=x.size()
             
-            out=torch.zeros(batch_size,int(width*height*channel/(self.patch_size**2)),self.patch_size**2).to(Device)
-            for batch in range(batch_size):
+    #         out=torch.zeros(batch_size,int(width*height*channel/(self.patch_size**2)),self.patch_size**2).to(Device)
+    #         for batch in range(batch_size):
                 
-                tok_emb=self.tok_emb(x[batch])
-                pos_emb=self.pos_emb(tok_emb)
-                out[batch]=self.drop_out(tok_emb+pos_emb)
-                # out[batch]=tok_emb+pos_emb
-        # out.requires_grad=True
-        # print(out.requires_grad)
-        return out
+    #             tok_emb=self.tok_emb(x[batch])
+    #             pos_emb=self.pos_emb(tok_emb)
+    #             out[batch]=self.drop_out(tok_emb+pos_emb)
+    #             # out[batch]=tok_emb+pos_emb
+    #     # out.requires_grad=True
+    #     # print(out.requires_grad)
+    #     return out
+    
+    def forward(self,x):
+        tok_emb=self.tok_emb(x)
+        pos_emb=self.pos_emb(tok_emb)
+        return tok_emb+pos_emb
+
     
 
 Device=("cuda" if torch.cuda.is_available() else "cpu")
@@ -116,8 +169,9 @@ class TokenEmbedding(nn.Module):
     
     def forward(self,x):
         with torch.no_grad():
-            len=x.size(0)
-            x=x.repeat(1,self.d_model).reshape(len,self.d_model)
+            len=x.size(1)
+            batch_size=x.size(0)
+            x=x.repeat(1,1,self.d_model).reshape(batch_size,len,self.d_model)
         return x
 
 class TransformerEmbedding(nn.Module):
@@ -133,18 +187,11 @@ class TransformerEmbedding(nn.Module):
         with torch.no_grad():#changed
             batches=x.size(0)
             time=x.size(1)
+            # print("length:",time)
             dimension=self.d_model
-            out=torch.zeros(batches,time,dimension).to(Device)
-            for batch in range(batches):
-                tok_emb=self.tok_emb(x[batch])
-                # print("tok_emb:",tok_emb.size())
-                pos_emb=self.pos_emb(x[batch])
-                # print('pos_emb:',pos_emb.size())
-                out[batch]=self.drop_out(tok_emb+pos_emb)
-                # out[batch]=tok_emb+pos_emb
-        # out.requires_grad=True
-        # print(out.requires_grad)
-        return out
+            tok_emb=self.tok_emb(x)
+            pos_emb=self.pos_emb(tok_emb)
+        return tok_emb+pos_emb
 
 
 
@@ -232,18 +279,20 @@ class EncoderLayer(nn.Module):#single Encoder layer
         return x
 
 class Encoder(nn.Module):
-    def __init__(self,picture_size,patch_size,hidden,n_head,n_layer,dropout=0.1,device="cpu"):
+    def __init__(self,length,d_model,hidden,n_head,n_layer,dropout=0.1,device="cpu"):
         super(Encoder,self).__init__()
-        self.embedding=PictureEncoding(picture_size,patch_size,dropout,device)
+        self.embedding=PictureEncoding(length,d_model,dropout,device)
         self.layers=nn.ModuleList( 
             [
-                EncoderLayer(patch_size*patch_size,hidden,n_head)
+                EncoderLayer(d_model,hidden,n_head)
                 for _ in range(n_layer)#create n_layer Encoderlayers
             ]
         )
 
     def forward(self,x,s_mask=None):
         x=self.embedding(x)
+        # print("embedding ended")
+        # print(x.size())
         for layer in self.layers:
             x=layer(x,s_mask) #pass
         return x
@@ -298,7 +347,7 @@ class Decoder(nn.Module):
         # self.fc=nn.Linear(d_model,dec_voc_size)
 
     def forward(self,dec,enc,t_mask=None,s_mask=None):#need two input: dec for the last output of the decoder, enc for the output of the encoder
-
+        # print("dec_size:",dec.size())
         dec=self.embedding(dec)
         for layer in self.layers:
             dec = layer(dec,enc,t_mask,s_mask)
@@ -312,9 +361,8 @@ class Transformer(nn.Module):
     def __init__(self,
                  src_pad_idx,#source padding index
                  trg_pad_idx,#target padding index
-                 picture_size,#encoder vocab size
                  dec_voc_size,#decoder vocab size
-                 patch_size,#dimension of the feature
+                 d_model,#dimension of the feature
                  n_heads,
                  ffn_hidden,
                  max_len,
@@ -323,8 +371,8 @@ class Transformer(nn.Module):
                  device
                  ):
         super(Transformer,self).__init__()
-        d_model=patch_size**2
-        self.encoder=Encoder(picture_size,patch_size=patch_size,hidden=ffn_hidden,n_head=n_heads,n_layer=n_layers,dropout=drop_prob,device=device)
+        length=max_len
+        self.encoder=Encoder(length,d_model=d_model,hidden=ffn_hidden,n_head=n_heads,n_layer=n_layers,dropout=drop_prob,device=device)
         self.decoder=Decoder(dec_voc_size,max_len,d_model,ffn_hidden,n_heads,n_layers,drop_prob,device)
         self.src_pad_idx=src_pad_idx
         self.trg_pad_idx=trg_pad_idx
@@ -423,13 +471,12 @@ def DataLoader(choice_list=[],index=None):
 model=Transformer(
     src_pad_idx=0,
     trg_pad_idx=2,
-    picture_size=[20,224,224,3],
     dec_voc_size=len(tag),
-    patch_size=16,
+    d_model=512,
     n_heads=8,
     n_layers=6,
     ffn_hidden=6,
-    max_len=588,
+    max_len=MAX_LEN,
     drop_prob=0.1,
     device=Device,
 ).to(Device)
@@ -439,16 +486,20 @@ loss_fn=torch.nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.0001, betas=(0.9, 0.98), eps=1e-9)
 # optimizer=torch.optim.SGD(model.parameters(),lr=1e-3)
 
-def train(epoch_num=20):
+def train(epoch_num=20,load=False):
     model.train()
+    if load:
+        print("loading model")
+        model.load_state_dict(torch.load("Vit.pth"))
     choice_list=[]
     epoch=0
     loss_sum=0
+    print_num=0
     while epoch<epoch_num:
         
         img,tag_tensor,tag_token,choice_list=DataLoader(choice_list=choice_list)
         img=img.to(Device)
-        padding_matrix=torch.ones(img.size(0),588-(len(tag_tensor)))*2
+        padding_matrix=torch.ones(img.size(0),MAX_LEN-(len(tag_tensor)))*2
         tag_tensor=torch.cat((tag_tensor,padding_matrix),dim=1)
         tag_tensor=tag_tensor.to(Device)
         pred_label=model(img,tag_tensor)
@@ -465,8 +516,10 @@ def train(epoch_num=20):
             optimizer.zero_grad()
             # loss.requires_grad_(True)
             loss.backward()
-            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=0.5)
+            # torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=0.5)
+            if print_num%PRINT_EVERY==0: print(f"Step num: {print_num}, current loss: {loss.item()}")
             optimizer.step()
+            print_num+=1
         if choice_list==[]:
             epoch=epoch+1
             print(epoch,":",loss_sum)
@@ -474,59 +527,12 @@ def train(epoch_num=20):
             loss_sum=0
         
    
-def following_train(epoch_num=20):
-    print("loading model")
-    model.load_state_dict(torch.load("Vit.pth"))
-    model.train()
-    print("start training")
-    choice_list=[]
-    epoch=0
-    loss_sum=0
-    while epoch<epoch_num:
-        
-        img,tag_tensor,tag_token,choice_list=DataLoader(choice_list=choice_list)
-        img=img.to(Device)
-        padding_matrix=torch.ones(img.size(0),588-(len(tag_tensor)))*2
-        tag_tensor=torch.cat((tag_tensor,padding_matrix),dim=1)
-        tag_tensor=tag_tensor.to(Device)
-        pred_label=model(img,tag_tensor)
-        tag_token=tag_token.to(Device)
-        # pred_token=torch.argmax(pred_label,1)
-        # print("pred_token",pred_token.size())
-        # print("tag_token",tag_token.size())
-        # pred_token=pred_token.to(torch.float64)
-        # tag_token=tag_token.to(torch.float64)
-        loss=loss_fn(pred_label,tag_token)
-
-        if not math.isnan(loss.item()):
-            loss_sum+=float(loss.item())
-            optimizer.zero_grad()
-            loss.requires_grad_(True)
-            loss.backward()
-            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=0.5)
-            optimizer.step()
-   
-        else:
-            print("pred_label:",pred_label.size())
-            print("tag_token",tag_tensor.size())
-            print(img.size())      
-
-            # print(pred_label[0])
-
-        print("epoch",epoch,"loss",loss.item())
-        
-        
-        if choice_list==[]:
-            epoch=epoch+1
-            print(epoch,":",loss_sum)
-            torch.save(model.state_dict(),"Vit.pth")
-            loss_sum=0
-    
 
 
 
-# train()
-following_train(30)
+if __name__=="__main__":
+    train(epoch_num=30,load=False)
+
 
 
 
