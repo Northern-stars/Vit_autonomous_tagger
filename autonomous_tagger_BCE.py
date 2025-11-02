@@ -58,7 +58,7 @@ class Env(Dataset):
         for i in range(len(self.tag)):
             if self.tag[i]==tag_:
                 return i
-        print(tag_)
+        # print(tag_)
 
     def tagTokenDecoding(self,tags):
         string=''
